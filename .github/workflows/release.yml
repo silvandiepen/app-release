@@ -94,6 +94,21 @@ jobs:
             echo "${VERSION} is not published yet; will publish."
           fi
 
+      - name: Debug OIDC claims (what npm sees)
+        if: steps.publish.outputs.published == 'false'
+        run: |
+          set +e
+          echo "Requesting GitHub OIDC token (audience=npm)..."
+          RESPONSE=$(curl -sS -H "Authorization: bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" "${ACTIONS_ID_TOKEN_REQUEST_URL}&audience=npm")
+          JWT=$(printf '%s' "$RESPONSE" | jq -r '.value // empty')
+          if [ -z "$JWT" ]; then
+            echo "No OIDC token returned. Raw response:"
+            echo "$RESPONSE"
+          else
+            echo "Decoded OIDC claims (this is the identity npm matches against your Trusted Publisher):"
+            printf '%s' "$JWT" | cut -d. -f2 | python3 -c "import sys,base64,json; p=sys.stdin.read().strip(); p+='='*(-len(p)%4); print(json.dumps(json.loads(base64.urlsafe_b64decode(p)),indent=2,sort_keys=True))"
+          fi
+
       - name: Publish to npm (Trusted Publishing)
         if: steps.publish.outputs.published == 'false'
         run: npm publish --access public --provenance
