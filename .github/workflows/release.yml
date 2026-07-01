@@ -1,32 +1,45 @@
 name: Release
 
+# Automatic, tokenless release pipeline.
+#
+# On every push to master:
+#   1. Derive a version bump from conventional commits (no hardcoded versions).
+#   2. If a release is warranted, bump package.json and push the vX.Y.Z tag.
+#   3. Publish to npm whenever the current package version is not yet on npm,
+#      using npm Trusted Publishing (--provenance, no NPM_TOKEN).
+#
+# Bump rules (0.x line): feat/breaking -> minor, fix/perf/refactor -> patch,
+# anything else -> no bump.
+#
+# One-time setup: link this workflow as a Trusted Publisher for @sil/app-release
+# on https://www.npmjs.com (Package settings -> Publishing access -> Trusted Publishers):
+#   Repository: silvandiepen/app-release
+#   Workflow:   .github/workflows/release.yml
+
 on:
   push:
-    tags:
-      - "v*"
-  workflow_dispatch:
-    inputs:
-      publish_npm:
-        description: "Publish package to npm"
-        required: true
-        default: "true"
-        type: choice
-        options:
-          - "true"
-          - "false"
+    branches:
+      - master
 
 permissions:
   contents: write
   id-token: write
 
+concurrency:
+  group: release
+  cancel-in-progress: false
+
 jobs:
   release:
-    name: Build release
-    runs-on: macos-15
-
+    name: Version, publish, and release
+    runs-on: ubuntu-latest
+    # Skip the auto-generated release commit to avoid a release loop.
+    if: ${{ github.event.head_commit == null || !startsWith(github.event.head_commit.message, 'chore(release)') }}
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
       - name: Setup Node
         uses: actions/setup-node@v4
@@ -37,47 +50,63 @@ jobs:
       - name: Check CLI syntax
         run: npm run check
 
-      - name: Preflight examples
+      - name: Determine version bump
+        id: bump
         run: |
-          npm run preflight:example
-          npm run preflight-all:example
+          set -e
+          LAST_TAG=$(git describe --tags --abbrev=0 2>/dev/null || echo "")
+          RANGE="${LAST_TAG:+$LAST_TAG..}HEAD"
+          echo "Analyzing commits in range: $RANGE"
+          MESSAGES=$(git log --format='%s' $RANGE)
+          echo "$MESSAGES"
+          BUMP=skip
+          if echo "$MESSAGES" | grep -Eq '^[a-z]+(\([^)]+\))?!:'; then
+            BUMP=minor   # breaking change in 0.x bumps minor
+          elif echo "$MESSAGES" | grep -Eq '^feat(\([^)]+\))?:'; then
+            BUMP=minor
+          elif echo "$MESSAGES" | grep -Eq '^(fix|perf|refactor)(\([^)]+\))?:'; then
+            BUMP=patch
+          fi
+          echo "bump=$BUMP" >> "$GITHUB_OUTPUT"
 
-      - name: Build docs
-        run: npm run docs:build
-
-      - name: Pack npm package
-        run: npm pack
-
-      - name: Check npm version
-        id: npm_version
-        shell: bash
+      - name: Apply version bump
+        if: steps.bump.outputs.bump != 'skip'
         run: |
-          set +e
-          package_name="$(node -p "require('./package.json').name")"
-          package_version="$(node -p "require('./package.json').version")"
-          npm view "${package_name}@${package_version}" version >/dev/null 2>&1
-          if [ "$?" -eq 0 ]; then
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          npm version "${{ steps.bump.outputs.bump }}" -m "chore(release): %s"
+          git push --follow-tags origin master
+
+      - name: Resolve version and publish status
+        id: publish
+        run: |
+          set -e
+          VERSION=$(node -p "require('./package.json').version")
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          if npm view "@sil/app-release@${VERSION}" version >/dev/null 2>&1; then
             echo "published=true" >> "$GITHUB_OUTPUT"
-            echo "${package_name}@${package_version} is already published."
+            echo "${VERSION} is already published; nothing to do."
           else
             echo "published=false" >> "$GITHUB_OUTPUT"
-            echo "${package_name}@${package_version} is not published yet."
+            echo "${VERSION} is not published yet; will publish."
           fi
 
-      - name: Upload package artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: npm-package
-          path: "*.tgz"
-
-      - name: Publish to npm
-        if: (github.event_name == 'push' || inputs.publish_npm == 'true') && steps.npm_version.outputs.published != 'true'
-        env:
-          NODE_AUTH_TOKEN: ""
+      - name: Publish to npm (Trusted Publishing)
+        if: steps.publish.outputs.published == 'false'
         run: npm publish --access public --provenance
 
+      - name: Build package tarball
+        if: steps.publish.outputs.published == 'false'
+        run: npm pack
+
       - name: Create GitHub release
-        if: github.event_name == 'push'
+        if: steps.publish.outputs.published == 'false'
         uses: softprops/action-gh-release@v2
         with:
+          tag_name: v${{ steps.publish.outputs.version }}
           files: "*.tgz"
+          generate_release_notes: true
+
+      - name: Already published
+        if: steps.publish.outputs.published == 'true' && steps.bump.outputs.bump == 'skip'
+        run: echo "No new release needed."
