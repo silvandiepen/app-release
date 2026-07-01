@@ -80,6 +80,9 @@ The app config owns:
 - promo video segments.
 - archive/export/upload settings.
 
+For a full setup checklist, use [docs/setup-new-project.md](docs/setup-new-project.md).
+For every config field currently supported, use [docs/config-reference.md](docs/config-reference.md).
+
 ## Screenshot Hooks
 
 Apps can be driven with launch args:
