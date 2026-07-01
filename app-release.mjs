@@ -355,10 +355,13 @@ function uploadMetadataRequirements(config) {
   return issues;
 }
 
-function prepareScreenshotsRequirements(config, args, module = "prepare-screenshots") {
+function prepareScreenshotsRequirements(config, args, module = "prepare-screenshots", options = {}) {
   const issues = [];
   if (!config.screenshots) {
     addIssue(issues, module, "config", "Missing screenshots config.");
+    return issues;
+  }
+  if (options.sourceWillBeGenerated) {
     return issues;
   }
   const sourceDir = screenshotOutputDir(config, args);
@@ -366,9 +369,9 @@ function prepareScreenshotsRequirements(config, args, module = "prepare-screensh
   return issues;
 }
 
-function uploadScreenshotsRequirements(config, args) {
+function uploadScreenshotsRequirements(config, args, options = {}) {
   const module = "upload-screenshots";
-  const issues = prepareScreenshotsRequirements(config, args, module);
+  const issues = prepareScreenshotsRequirements(config, args, module, options);
   checkFields(issues, module, config, ["bundleId"]);
   if (!(config.upload?.appleId ?? config.appleId)) {
     addIssue(issues, module, "config", "Missing upload.appleId or appleId in config.");
@@ -422,11 +425,11 @@ function requirementsForMode(config, args, mode) {
       ...screenshotRequirements(config),
       ...archiveRequirements(config),
       ...metadataRequirements(config),
-      ...prepareScreenshotsRequirements(config, args),
+      ...prepareScreenshotsRequirements(config, args, "prepare-screenshots", { sourceWillBeGenerated: true }),
       ...(args.upload ? [
         ...uploadBuildRequirements(config, args),
         ...uploadMetadataRequirements(config),
-        ...uploadScreenshotsRequirements(config, args)
+        ...uploadScreenshotsRequirements(config, args, { sourceWillBeGenerated: true })
       ] : [])
     ]);
   default:

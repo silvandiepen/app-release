@@ -1,6 +1,6 @@
 {
   "name": "@sil/app-release",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Shared iOS app release automation for screenshots, promo videos, metadata, and App Store uploads.",
   "type": "module",
   "repository": {
