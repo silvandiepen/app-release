@@ -1,0 +1,26 @@
+{
+  "name": "@sil/app-release",
+  "version": "0.1.0",
+  "description": "Shared iOS app release automation for screenshots, promo videos, metadata, and App Store uploads.",
+  "type": "module",
+  "bin": {
+    "app-release": "./app-release.mjs",
+    "app-release-all": "./app-release-all.mjs"
+  },
+  "files": [
+    "app-release.mjs",
+    "app-release-all.mjs",
+    "README.md",
+    "examples"
+  ],
+  "engines": {
+    "node": ">=22"
+  },
+  "license": "UNLICENSED",
+  "private": false,
+  "scripts": {
+    "check": "node --check app-release.mjs && node --check app-release-all.mjs",
+    "preflight:example": "node app-release.mjs --config examples/app.ios.json --mode preflight --dry-run",
+    "preflight-all:example": "node app-release-all.mjs --manifest examples/release.config.json --mode preflight --dry-run"
+  }
+}

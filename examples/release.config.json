@@ -1,0 +1,8 @@
+{
+  "apps": [
+    {
+      "slug": "chess",
+      "releaseConfig": "app.ios.json"
+    }
+  ]
+}
