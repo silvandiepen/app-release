@@ -2,7 +2,7 @@
 
 import { existsSync, mkdirSync, readFileSync, copyFileSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, isAbsolute, join, resolve } from "node:path";
-import { spawnSync } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import { homedir } from "node:os";
 
 const repoRoot = process.env.APP_RELEASE_REPO_ROOT
@@ -162,6 +162,11 @@ function appProductName(config) {
   return config.productName ?? config.scheme;
 }
 
+function platformFor(config) {
+  const platform = String(config.platform ?? "ios").toLowerCase();
+  return platform === "macos" || platform === "mac" ? "macos" : "ios";
+}
+
 function simulatorAppPath(config) {
   return join(derivedPath(config, "screenshots-derived-data"), "Build/Products/Debug-iphonesimulator", `${appProductName(config)}.app`);
 }
@@ -273,6 +278,10 @@ function xcodeProjectRequirements(config, module, needsBundleId = false) {
   if (config.project) {
     checkPath(issues, module, "Xcode project", projectPath(config));
   }
+  if (platformFor(config) === "macos") {
+    checkCommand(issues, module, "xcodebuild", "install Xcode command line tools");
+    return issues;
+  }
   checkPath(issues, module, "iOS directory", iosDir(config));
   checkCommand(issues, module, "xcodegen", "install with: brew install xcodegen");
   checkCommand(issues, module, "xcodebuild", "install Xcode command line tools");
@@ -283,6 +292,10 @@ function screenshotRequirements(config, module = "screenshots") {
   const issues = xcodeProjectRequirements(config, module, true);
   if (!config.screenshots) {
     addIssue(issues, module, "config", "Missing screenshots config.");
+  }
+  if (platformFor(config) === "macos") {
+    checkCommand(issues, module, "screencapture", "built into macOS");
+    return issues;
   }
   checkCommand(issues, module, "xcrun", "install Xcode command line tools");
   return issues;
@@ -661,9 +674,27 @@ function siteScreenshotOutputDir(config) {
   return join(repoRoot, "site/public/screenshots/apps", config.app);
 }
 
-function promoVideoOutputDir(config, args) {
+function promoVideoLayout(config) {
+  return config.promoVideo?.outputLayout ?? config.promoVideo?.layout ?? "default";
+}
+
+function promoVideoOutputDir(config, args, device = null) {
   const baseDir = expandPath(args.output ?? config.promoVideo?.outputDir ?? `artifacts/videos/${config.app}`);
+  if (promoVideoLayout(config) === "app-previews") {
+    const deviceSlug = device ? slug(device.name ?? device.displayType ?? "device") : "{device}";
+    return join(baseDir, releaseVersion(config), deviceSlug);
+  }
   return join(baseDir, "videos", releaseVersion(config));
+}
+
+function promoVideoTargetPath(config, args, device) {
+  const deviceSlug = slug(device.name ?? device.displayType ?? "device");
+  const outputDir = promoVideoOutputDir(config, args, device);
+  if (promoVideoLayout(config) === "app-previews") {
+    const locale = config.promoVideo?.locale ?? config.promoVideo?.defaultLocale ?? "en-US";
+    return join(outputDir, `${config.app}-${deviceSlug}-preview-${locale}.mp4`);
+  }
+  return join(outputDir, `${config.app}-10s-promo-${deviceSlug}.mp4`);
 }
 
 function releaseVersion(config) {
@@ -701,6 +732,9 @@ function countScreenshotJobsPerDevice(config) {
 }
 
 function captureScreenshots(config, args, options = {}) {
+  if (platformFor(config) === "macos") {
+    return captureScreenshotsMacos(config, args, options);
+  }
   requireFields(config, ["app", "scheme", "project", "bundleId"]);
   const screenshots = config.screenshots;
   if (!screenshots) {
@@ -781,6 +815,178 @@ function captureScreenshots(config, args, options = {}) {
     }
 
     resetStatusBar(udid, screenshots.statusBar, args);
+  }
+
+  console.log(`\nScreenshots written to ${outputDir}`);
+}
+
+const MACOS_WINDOW_ID_SWIFT = `import Foundation
+import CoreGraphics
+
+let pid = Int32(CommandLine.arguments[1]) ?? 0
+guard let info = CGWindowListCopyWindowInfo([.optionOnScreenOnly, .excludeDesktopElements], kCGNullWindowID) as? [[String: Any]] else { exit(1) }
+for w in info {
+  let owner = w[kCGWindowOwnerPID as String] as? Int32 ?? 0
+  if owner != pid { continue }
+  let layer = w[kCGWindowLayer as String] as? Int ?? 0
+  if layer != 0 { continue }
+  if let wid = w[kCGWindowNumber as String] as? Int { print(wid); exit(0) }
+}
+exit(1)
+`;
+
+function macosAppPath(config) {
+  return join(derivedPath(config, "screenshots-derived-data"), "Build/Products/Debug", `${appProductName(config)}.app`);
+}
+
+function macosExecutablePath(config, args) {
+  const app = macosAppPath(config);
+  const fallback = join(app, "Contents/MacOS", appProductName(config));
+  if (args?.dryRun) { return fallback; }
+  const result = spawnSync("/usr/libexec/PlistBuddy", ["-c", "Print CFBundleExecutable", join(app, "Contents/Info.plist")], { encoding: "utf8" });
+  const executable = result.status === 0 ? result.stdout.trim() : null;
+  return executable ? join(app, "Contents/MacOS", executable) : fallback;
+}
+
+function buildMacosApp(config, args) {
+  const quietBuild = config.screenshots?.quietBuild ?? true;
+  run("xcodebuild", [
+    "build",
+    ...(quietBuild ? ["-quiet"] : []),
+    "-project", projectPath(config),
+    "-scheme", config.scheme,
+    "-configuration", config.screenshots?.configuration ?? "Debug",
+    "-destination", "platform=macOS",
+    "-derivedDataPath", derivedPath(config, "screenshots-derived-data")
+  ], { dryRun: args.dryRun });
+}
+
+function launchMacosApp(config, args, launchEnv, launchArgs) {
+  const executable = macosExecutablePath(config, args);
+  if (args.dryRun) {
+    run(executable, launchArgs, { dryRun: true, env: launchEnv });
+    return 0;
+  }
+  const child = spawn(executable, launchArgs, {
+    cwd: repoRoot,
+    env: { ...process.env, ...launchEnv },
+    detached: true,
+    stdio: "ignore"
+  });
+  child.unref();
+  return child.pid;
+}
+
+function quitMacosApp(config, args, pid) {
+  if (!pid) { return; }
+  if (args.dryRun) {
+    run("kill", [String(pid)], { dryRun: true, allowFailure: true });
+    return;
+  }
+  run("kill", [String(pid)], { allowFailure: true, capture: true });
+  Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 800);
+}
+
+function ensureMacosWindowIdHelper(config, args) {
+  const binDir = derivedPath(config, "bin");
+  const sourcePath = join(binDir, "window-id.swift");
+  const binaryPath = join(binDir, "window-id");
+  if (args.dryRun) {
+    run("swiftc", ["-O", "-framework", "CoreGraphics", "-o", binaryPath, sourcePath], { dryRun: true });
+    return binaryPath;
+  }
+  if (!existsSync(binaryPath)) {
+    mkdirSync(binDir, { recursive: true });
+    writeFileSync(sourcePath, MACOS_WINDOW_ID_SWIFT);
+    run("swiftc", ["-O", "-framework", "CoreGraphics", "-o", binaryPath, sourcePath], { cwd: binDir });
+  }
+  return binaryPath;
+}
+
+function macosWindowId(config, args, pid, timeoutSeconds = 15) {
+  const binary = ensureMacosWindowIdHelper(config, args);
+  if (args.dryRun) { return "DRY-RUN-WINDOW"; }
+  const deadline = Date.now() + timeoutSeconds * 1000;
+  while (Date.now() < deadline) {
+    const result = spawnSync(binary, [String(pid)], { encoding: "utf8" });
+    if (result.status === 0) {
+      const id = result.stdout.trim().split("\n")[0];
+      if (id) { return id; }
+    }
+    Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 500);
+  }
+  throw new Error(`No on-screen window found for ${config.app} (pid ${pid}) within ${timeoutSeconds}s.`);
+}
+
+function captureScreenshotsMacos(config, args, options = {}) {
+  requireFields(config, ["app", "scheme", "project", "bundleId"]);
+  const screenshots = config.screenshots;
+  if (!screenshots) {
+    throw new Error("Missing screenshots config.");
+  }
+
+  const outputDir = options.outputDir ?? screenshotOutputDir(config, args);
+  const locales = normalizeLocales(screenshots.locales?.length ? screenshots.locales : ["en-US"]);
+  const devices = screenshots.devices?.length ? screenshots.devices : [{ name: "mac", displayType: "mac" }];
+  const colorModes = screenshots.colorModes?.length ? screenshots.colorModes : [{ id: "default" }];
+  const scenarios = (screenshots.scenarios?.length ? screenshots.scenarios : [{ id: "home", filename: "01-home.png" }])
+    .filter((scenario) => scenario.enabled !== false);
+  const budget = screenshots.scenarioBudgetPerDevice;
+  const jobsPerDevice = countScreenshotJobsPerDevice(config);
+  if (budget != null && jobsPerDevice > budget) {
+    throw new Error(`Screenshot config has ${jobsPerDevice} jobs per device, over budget ${budget}.`);
+  }
+
+  if (!args.dryRun && options.cleanOutputDir) {
+    rmSync(outputDir, { recursive: true, force: true });
+  }
+  if (!args.dryRun) {
+    mkdirSync(outputDir, { recursive: true });
+  }
+
+  buildMacosApp(config, args);
+
+  for (const device of devices) {
+    for (let index = 0; index < scenarios.length; index += 1) {
+      const scenario = scenarios[index];
+      const scenarioLocales = normalizeLocales(scenario.locales?.length ? scenario.locales : locales);
+      const scenarioColorModes = scenario.colorModes?.length
+        ? colorModes.filter((colorMode) => scenario.colorModes.includes(colorMode.id))
+        : colorModes;
+
+      for (const locale of scenarioLocales) {
+        for (const colorMode of scenarioColorModes) {
+          const levels = scenario.levels?.length ? scenario.levels : [null];
+          for (const level of levels) {
+            const context = { app: config.app, locale: locale.id, appLanguage: locale.appLanguage, colorMode, scenario, level, device };
+            const launchEnv = expandObjectTemplate({
+              ...screenshots.env,
+              ...colorMode.env,
+              ...scenario.env
+            }, context);
+            const launchArgs = expandLaunchArgs(config, locale, scenario, colorMode, level);
+
+            const pid = launchMacosApp(config, args, launchEnv, launchArgs);
+            const windowId = macosWindowId(config, args, pid, screenshots.windowAppearTimeoutSeconds ?? 15);
+
+            const waitSeconds = scenario.waitSeconds ?? screenshots.defaultWaitSeconds ?? 2;
+            if (!args.dryRun && waitSeconds > 0) {
+              Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, waitSeconds * 1000);
+            }
+
+            const filenameTemplate = scenario.filename ?? `${String(index + 1).padStart(2, "0")}-{scenario}{level}-{colorMode}.png`;
+            const filename = expandTemplate(filenameTemplate, context).replace(/--+/g, "-");
+            const targetDir = join(outputDir, slug(device.name ?? device.displayType ?? "mac"));
+            if (!args.dryRun) {
+              mkdirSync(targetDir, { recursive: true });
+            }
+            run("screencapture", ["-l", windowId, "-o", "-x", join(targetDir, filename)], { dryRun: args.dryRun });
+
+            quitMacosApp(config, args, pid);
+          }
+        }
+      }
+    }
   }
 
   console.log(`\nScreenshots written to ${outputDir}`);
@@ -1026,8 +1232,8 @@ function capturePromoVideo(config, args) {
   const segments = promoSegments(config, screenshots);
   const width = promo.width ?? 1290;
   const height = promo.height ?? 2796;
-  const outputDir = promoVideoOutputDir(config, args);
-  const target = join(outputDir, `${config.app}-10s-promo-${slug(device.name ?? device.displayType ?? "device")}.mp4`);
+  const outputDir = promoVideoOutputDir(config, args, device);
+  const target = promoVideoTargetPath(config, args, device);
   const tempDir = join(outputDir, ".tmp", `${config.app}-${slug(device.name ?? device.displayType ?? "device")}`);
 
   if (!args.dryRun) {

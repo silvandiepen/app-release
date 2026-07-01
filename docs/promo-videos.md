@@ -54,3 +54,21 @@ By default videos go to:
 ```txt
 artifacts/videos/<app>/videos/<version>/*.mp4
 ```
+
+Projects that keep App Store assets beside each app can use:
+
+```json
+{
+  "promoVideo": {
+    "outputDir": "/Users/silvandiepen/Projects/Mazzi/apps/chess/previews",
+    "outputLayout": "app-previews",
+    "locale": "en-US"
+  }
+}
+```
+
+That writes:
+
+```txt
+<outputDir>/<version>/<device>/*-<locale>.mp4
+```

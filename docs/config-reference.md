@@ -30,7 +30,21 @@ app-release --config apps/<app>/release/ios.json
 - `productName`: simulator app product name. Defaults to `scheme`.
 - `bundleId`: iOS bundle identifier.
 - `appleId`: App Store Connect app Apple ID.
+- `platform`: optional. `ios` (default) or `macos`. Selects the build/launch/capture pipeline. Omitting it keeps the existing iOS behavior, so other integrations are unaffected.
 - `releaseVersion`: optional explicit output version. If omitted, the tool tries to read `MARKETING_VERSION` from `iosDir/project.yml`, then falls back to `unversioned`.
+
+## Platforms
+
+```json
+{
+  "platform": "macos"
+}
+```
+
+- `ios` (default): builds for the iOS Simulator, launches with `xcrun simctl`, and captures with `simctl io screenshot`. Requires `iosDir`, XcodeGen, and a simulator.
+- `macos`: builds for `platform=macOS`, launches the `.app` directly with launch args + environment, and captures each on-screen window with `screencapture`. Does not require a simulator, `iosDir`, or XcodeGen. Requires `xcodebuild` and `screencapture`.
+
+Both platforms share the same `screenshots` config shape (devices, locales, color modes, scenarios, env, launch args). For `macos`, `screenshots.devices` defaults to `[{ "name": "mac", "displayType": "mac" }]` and env vars are passed to the app directly (no `SIMCTL_CHILD_` prefixing).
 
 ## Validation
 
@@ -121,6 +135,7 @@ Supported metadata JSON keys:
 - `scenarioBudgetPerDevice`: max screenshot jobs per device.
 - `baseLaunchArgs`: launch args used for every screenshot scenario. Defaults to `["--ui-testing"]`.
 - `statusBar`: values passed to `xcrun simctl status_bar override`.
+- `windowAppearTimeoutSeconds`: macOS only. Seconds to wait for the app window to appear before capturing a window id. Defaults to `15`.
 
 ### Screenshot Devices
 
@@ -224,6 +239,8 @@ Template values supported in launch args, env, and filenames:
     "width": 1290,
     "height": 2796,
     "outputDir": "artifacts/videos/chess",
+    "outputLayout": "default",
+    "locale": "en-US",
     "eraseBeforeCapture": false,
     "segments": []
   }
@@ -234,6 +251,8 @@ Template values supported in launch args, env, and filenames:
 - `device`: inline device object if not using `deviceName`.
 - `width` / `height`: rendered video size.
 - `outputDir`: base video output folder. Final videos go under `videos/<version>`.
+- `outputLayout`: `default` writes `videos/<version>/*.mp4`; `app-previews` writes `<version>/<device>/*-<locale>.mp4`.
+- `locale`: locale suffix used by the `app-previews` filename. Defaults to `en-US`.
 - `eraseBeforeCapture`: erase simulator before capture.
 - `segments`: must total 10 seconds.
 

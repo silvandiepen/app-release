@@ -1,0 +1,24 @@
+name: Release Please
+
+on:
+  push:
+    branches:
+      - master
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  release-please:
+    name: Version & release
+    runs-on: ubuntu-latest
+    steps:
+      - uses: googleapis/release-please-action@v4
+        with:
+          release-type: node
+          package-name: "@sil/app-release"
+          # Bumps package.json + CHANGELOG from conventional commits, opens a
+          # release PR, and on merge creates the vX.Y.Z tag + GitHub release.
+          # The tag then triggers release.yml to publish to npm.
+          include-component-in-tag: false
