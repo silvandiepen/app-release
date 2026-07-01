@@ -147,7 +147,7 @@ npx @sil/app-release --config apps/chess/release/ios.json --mode preflight
 For all apps:
 
 ```sh
-npx @sil/app-release-all --mode preflight
+npx -p @sil/app-release app-release-all --mode preflight
 ```
 
 Fix every missing requirement reported for the module you want to run.

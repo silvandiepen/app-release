@@ -38,8 +38,8 @@ Relative `releaseConfig` paths resolve from the manifest location. In normal pro
 Then run:
 
 ```sh
-npx @sil/app-release-all --mode screenshots
-npx @sil/app-release-all --mode promo-video --apps chess,reversi
+npx -p @sil/app-release app-release-all --mode screenshots
+npx -p @sil/app-release app-release-all --mode promo-video --apps chess,reversi
 ```
 
 ## Modes

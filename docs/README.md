@@ -38,7 +38,7 @@ Product-specific content stays in the product repo:
 From a product repo:
 
 ```sh
-npx @sil/app-release-all --mode preflight
+npx -p @sil/app-release app-release-all --mode preflight
 ```
 
 Preflight prints what is ready and what is missing for each module.

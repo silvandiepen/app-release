@@ -15,7 +15,7 @@ npx @sil/app-release --config apps/chess/release/ios.json --mode preflight
 Run all apps from `release.config.json`:
 
 ```sh
-npx @sil/app-release-all --mode screenshots
+npx -p @sil/app-release app-release-all --mode screenshots
 ```
 
 ## Modes

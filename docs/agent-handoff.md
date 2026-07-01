@@ -28,7 +28,7 @@ Only config, metadata, screenshots, app hooks, and signing/app identifiers belon
 
 ## Acceptance Criteria
 
-- `npx @sil/app-release-all --mode preflight` runs from the product repo.
+- `npx -p @sil/app-release app-release-all --mode preflight` runs from the product repo.
 - Every app has an app release config.
 - Every app has App Store metadata JSON.
 - Screenshot scenarios cover the required App Store screenshots.
