@@ -9,8 +9,8 @@
   },
   "homepage": "https://app-release.sil.mt",
   "bin": {
-    "app-release": "./app-release.mjs",
-    "app-release-all": "./app-release-all.mjs"
+    "app-release": "app-release.mjs",
+    "app-release-all": "app-release-all.mjs"
   },
   "publishConfig": {
     "access": "public",
