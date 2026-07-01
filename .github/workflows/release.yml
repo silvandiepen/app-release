@@ -1,0 +1,65 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+    inputs:
+      publish_npm:
+        description: "Publish package to npm"
+        required: true
+        default: "true"
+        type: choice
+        options:
+          - "true"
+          - "false"
+
+permissions:
+  contents: write
+  id-token: write
+
+jobs:
+  release:
+    name: Build release
+    runs-on: macos-15
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          registry-url: "https://registry.npmjs.org"
+
+      - name: Check CLI syntax
+        run: npm run check
+
+      - name: Preflight examples
+        run: |
+          npm run preflight:example
+          npm run preflight-all:example
+
+      - name: Build docs
+        run: npm run docs:build
+
+      - name: Pack npm package
+        run: npm pack
+
+      - name: Upload package artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: npm-package
+          path: "*.tgz"
+
+      - name: Publish to npm
+        if: github.event_name == 'push' || inputs.publish_npm == 'true'
+        run: npm publish --access public --provenance
+
+      - name: Create GitHub release
+        if: github.event_name == 'push'
+        uses: softprops/action-gh-release@v2
+        with:
+          files: "*.tgz"

@@ -3,3 +3,4 @@ node_modules/
 artifacts/
 .tmp/
 *.log
+docs/public/
