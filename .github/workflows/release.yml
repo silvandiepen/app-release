@@ -72,6 +72,8 @@ jobs:
 
       - name: Publish to npm
         if: (github.event_name == 'push' || inputs.publish_npm == 'true') && steps.npm_version.outputs.published != 'true'
+        env:
+          NODE_AUTH_TOKEN: ""
         run: npm publish --access public --provenance
 
       - name: Create GitHub release
