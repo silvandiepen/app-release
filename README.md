@@ -48,7 +48,7 @@ npx -p @sil/app-release app-release-all --mode promo-video --apps chess,reversi
 - `validate` / `verify`: run the configured app validation command.
 - `screenshots`: build the simulator app and capture configured screenshots.
 - `site-screenshots`: capture screenshots into `site/public/screenshots/apps/<app>`.
-- `promo-video`: compose a 10 second promo/App Preview video.
+- `promo-video` / `promo-videos` / `videos`: record or compose promo/App Preview videos.
 - `archive`: create an Xcode archive and optional IPA export.
 - `upload-build`: upload a configured IPA with `xcrun altool`.
 - `prepare-metadata`: export repo-owned metadata JSON to Fastlane Deliver format.

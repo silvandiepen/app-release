@@ -242,6 +242,7 @@ Template values supported in launch args, env, and filenames:
     "outputLayout": "default",
     "locale": "en-US",
     "eraseBeforeCapture": false,
+    "recordings": [],
     "segments": []
   }
 }
@@ -254,7 +255,25 @@ Template values supported in launch args, env, and filenames:
 - `outputLayout`: `default` writes `videos/<version>/*.mp4`; `app-previews` writes `<version>/<device>/*-<locale>.mp4`.
 - `locale`: locale suffix used by the `app-previews` filename. Defaults to `en-US`.
 - `eraseBeforeCapture`: erase simulator before capture.
-- `segments`: must total 10 seconds.
+- `recordings`: real app walkthrough recordings with explicit durations.
+- `segments`: card/capture compositions; must total 10 seconds.
+
+Recording entries can set:
+
+- `id`
+- `deviceName` or `device`
+- `filename`
+- `width` / `height`
+- `durationSeconds`
+- `startDelaySeconds`
+- `launchArgs`
+- `env`
+- `userDefaults`
+- `filter` or `videoFilter` for FFmpeg scaling/cropping
+- `cursor.moves` and `cursor.clicks`
+
+Cursor coordinates can be absolute pixels or relative values from `0` to `1`.
+Set `cursor.enabled` to `false` to render click indicators without a visible moving cursor.
 
 Supported segment types:
 

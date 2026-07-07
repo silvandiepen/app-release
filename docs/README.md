@@ -14,7 +14,7 @@ It lets each product repo keep its own release config, App Store copy, screensho
 
 - validates app projects
 - captures App Store screenshots from simulator scenarios
-- builds 10 second promo videos
+- records and composes promo videos
 - archives iOS apps and exports IPAs
 - prepares App Store metadata for Fastlane Deliver
 - uploads builds, metadata, and screenshots

@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 
-import { existsSync, mkdirSync, readFileSync, copyFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, copyFileSync, rmSync, writeFileSync, statSync } from "node:fs";
 import { dirname, isAbsolute, join, resolve } from "node:path";
 import { spawn, spawnSync } from "node:child_process";
 import { homedir } from "node:os";
@@ -22,7 +22,9 @@ Modes:
   verify               Alias for validate.
   screenshots          Build simulator app and capture configured screenshots.
   site-screenshots     Capture configured screenshots into site/public/screenshots/apps.
-  promo-video          Build simulator app and record a 10 second promo video.
+  promo-video          Build simulator/app preview videos.
+  promo-videos         Alias for promo-video.
+  videos               Alias for promo-video.
   archive              Create an archive and optional IPA export.
   upload-build         Upload a configured IPA with xcrun altool.
   prepare-metadata     Export repo-owned metadata JSON to Fastlane Deliver format.
@@ -307,8 +309,13 @@ function promoVideoRequirements(config) {
   checkCommand(issues, module, "ffmpeg", "install with: brew install ffmpeg");
   const screenshots = config.screenshots ?? {};
   try {
-    const segments = promoSegments(config, screenshots);
-    if (segments.some((segment) => ["title", "card", "cta"].includes(segment.type))) {
+    const promo = promoVideoConfig(config);
+    const segments = promo.recordings?.length ? [] : promoSegments(config, screenshots);
+    const recordings = promo.recordings ?? [];
+    if (
+      segments.some((segment) => ["title", "card", "cta", "image"].includes(segment.type))
+      || recordings.some((recording) => recording.cursor?.enabled !== false && (recording.cursor || recording.clicks?.length))
+    ) {
       checkCommand(issues, module, "magick", "install with: brew install imagemagick");
     }
   } catch (error) {
@@ -413,6 +420,8 @@ function requirementsForMode(config, args, mode) {
   case "site-screenshots":
     return screenshotRequirements(config, "site-screenshots");
   case "promo-video":
+  case "promo-videos":
+  case "videos":
     return promoVideoRequirements(config);
   case "archive":
     return archiveRequirements(config);
@@ -675,11 +684,17 @@ function siteScreenshotOutputDir(config) {
 }
 
 function promoVideoLayout(config) {
-  return config.promoVideo?.outputLayout ?? config.promoVideo?.layout ?? "default";
+  const promo = promoVideoConfig(config);
+  return promo.outputLayout ?? promo.layout ?? "default";
+}
+
+function promoVideoConfig(config) {
+  return config.promoVideo ?? config.videos ?? {};
 }
 
 function promoVideoOutputDir(config, args, device = null) {
-  const baseDir = expandPath(args.output ?? config.promoVideo?.outputDir ?? `artifacts/videos/${config.app}`);
+  const promo = promoVideoConfig(config);
+  const baseDir = expandPath(args.output ?? promo.outputDir ?? `artifacts/videos/${config.app}`);
   if (promoVideoLayout(config) === "app-previews") {
     const deviceSlug = device ? slug(device.name ?? device.displayType ?? "device") : "{device}";
     return join(baseDir, releaseVersion(config), deviceSlug);
@@ -688,10 +703,11 @@ function promoVideoOutputDir(config, args, device = null) {
 }
 
 function promoVideoTargetPath(config, args, device) {
+  const promo = promoVideoConfig(config);
   const deviceSlug = slug(device.name ?? device.displayType ?? "device");
   const outputDir = promoVideoOutputDir(config, args, device);
   if (promoVideoLayout(config) === "app-previews") {
-    const locale = config.promoVideo?.locale ?? config.promoVideo?.defaultLocale ?? "en-US";
+    const locale = promo.locale ?? promo.defaultLocale ?? "en-US";
     return join(outputDir, `${config.app}-${deviceSlug}-preview-${locale}.mp4`);
   }
   return join(outputDir, `${config.app}-10s-promo-${deviceSlug}.mp4`);
@@ -823,13 +839,22 @@ function captureScreenshots(config, args, options = {}) {
 const MACOS_WINDOW_ID_SWIFT = `import Foundation
 import CoreGraphics
 
-let pid = Int32(CommandLine.arguments[1]) ?? 0
+let pid = Int32(CommandLine.arguments.dropFirst().first ?? "") ?? 0
+let expectedTitle = CommandLine.arguments.dropFirst(2).first
 guard let info = CGWindowListCopyWindowInfo([.optionOnScreenOnly, .excludeDesktopElements], kCGNullWindowID) as? [[String: Any]] else { exit(1) }
 for w in info {
   let owner = w[kCGWindowOwnerPID as String] as? Int32 ?? 0
   if owner != pid { continue }
   let layer = w[kCGWindowLayer as String] as? Int ?? 0
   if layer != 0 { continue }
+  if let expectedTitle {
+    let title = w[kCGWindowName as String] as? String
+    if title != expectedTitle { continue }
+  }
+  let bounds = w[kCGWindowBounds as String] as? [String: Any] ?? [:]
+  let width = bounds["Width"] as? Double ?? 0
+  let height = bounds["Height"] as? Double ?? 0
+  if width < 300 || height < 240 { continue }
   if let wid = w[kCGWindowNumber as String] as? Int { print(wid); exit(0) }
 }
 exit(1)
@@ -873,6 +898,9 @@ function launchMacosApp(config, args, launchEnv, launchArgs) {
     detached: true,
     stdio: "ignore"
   });
+  if (!child.pid) {
+    throw new Error(`Could not launch macOS app executable: ${executable}`);
+  }
   child.unref();
   return child.pid;
 }
@@ -892,23 +920,23 @@ function ensureMacosWindowIdHelper(config, args) {
   const sourcePath = join(binDir, "window-id.swift");
   const binaryPath = join(binDir, "window-id");
   if (args.dryRun) {
-    run("swiftc", ["-O", "-framework", "CoreGraphics", "-o", binaryPath, sourcePath], { dryRun: true });
+    run("swiftc", ["-module-cache-path", join(derivedPath(config, "swift-module-cache")), "-O", "-framework", "CoreGraphics", "-o", binaryPath, sourcePath], { dryRun: true });
     return binaryPath;
   }
-  if (!existsSync(binaryPath)) {
-    mkdirSync(binDir, { recursive: true });
-    writeFileSync(sourcePath, MACOS_WINDOW_ID_SWIFT);
-    run("swiftc", ["-O", "-framework", "CoreGraphics", "-o", binaryPath, sourcePath], { cwd: binDir });
-  }
+  mkdirSync(binDir, { recursive: true });
+  writeFileSync(sourcePath, MACOS_WINDOW_ID_SWIFT);
+  run("swiftc", ["-module-cache-path", join(derivedPath(config, "swift-module-cache")), "-O", "-framework", "CoreGraphics", "-o", binaryPath, sourcePath], { cwd: binDir });
   return binaryPath;
 }
 
-function macosWindowId(config, args, pid, timeoutSeconds = 15) {
+function macosWindowId(config, args, pid, timeoutSeconds = 15, title = null) {
   const binary = ensureMacosWindowIdHelper(config, args);
   if (args.dryRun) { return "DRY-RUN-WINDOW"; }
   const deadline = Date.now() + timeoutSeconds * 1000;
+  const start = Date.now();
   while (Date.now() < deadline) {
-    const result = spawnSync(binary, [String(pid)], { encoding: "utf8" });
+    const helperArgs = title && Date.now() - start < 2500 ? [String(pid), title] : [String(pid)];
+    const result = spawnSync(binary, helperArgs, { encoding: "utf8" });
     if (result.status === 0) {
       const id = result.stdout.trim().split("\n")[0];
       if (id) { return id; }
@@ -916,6 +944,47 @@ function macosWindowId(config, args, pid, timeoutSeconds = 15) {
     Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 500);
   }
   throw new Error(`No on-screen window found for ${config.app} (pid ${pid}) within ${timeoutSeconds}s.`);
+}
+
+function normalizeMacosScreenshot(config, args, filePath, colorMode) {
+  const size = config.screenshots?.macosOutputSize ?? { width: 2560, height: 1600 };
+  const width = Number(size.width ?? 2560);
+  const height = Number(size.height ?? 1600);
+  const background = colorMode?.id === "dark"
+    ? (config.screenshots?.macosDarkBackground ?? "#111315")
+    : (config.screenshots?.macosLightBackground ?? "#f5f5f7");
+  const tempPath = `${filePath}.normalized.png`;
+
+  run("magick", [
+    "-size", `${width}x${height}`,
+    `xc:${background}`,
+    "(",
+    filePath,
+    "-resize", `${width}x${height}`,
+    ")",
+    "-gravity", "center",
+    "-composite",
+    tempPath
+  ], { dryRun: args.dryRun });
+  if (!args.dryRun) {
+    copyFileSync(tempPath, filePath);
+    rmSync(tempPath, { force: true });
+  }
+}
+
+function assertNonBlankScreenshot(filePath) {
+  const result = spawnSync("sips", ["-g", "pixelWidth", "-g", "pixelHeight", filePath], {
+    encoding: "utf8"
+  });
+  if (result.status !== 0) {
+    throw new Error(`Could not inspect screenshot: ${filePath}`);
+  }
+  const width = Number(result.stdout.match(/pixelWidth:\s*(\d+)/)?.[1] ?? 0);
+  const height = Number(result.stdout.match(/pixelHeight:\s*(\d+)/)?.[1] ?? 0);
+  const bytes = statSync(filePath).size;
+  if (width < 300 || height < 240 || bytes < 50000) {
+    throw new Error(`Blank or near-blank screenshot captured: ${filePath}`);
+  }
 }
 
 function captureScreenshotsMacos(config, args, options = {}) {
@@ -967,20 +1036,27 @@ function captureScreenshotsMacos(config, args, options = {}) {
             const launchArgs = expandLaunchArgs(config, locale, scenario, colorMode, level);
 
             const pid = launchMacosApp(config, args, launchEnv, launchArgs);
-            const windowId = macosWindowId(config, args, pid, screenshots.windowAppearTimeoutSeconds ?? 15);
-
             const waitSeconds = scenario.waitSeconds ?? screenshots.defaultWaitSeconds ?? 2;
             if (!args.dryRun && waitSeconds > 0) {
               Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, waitSeconds * 1000);
             }
+            const windowTitle = scenario.windowTitle ?? screenshots.macosWindowTitle ?? null;
+            const windowId = macosWindowId(config, args, pid, screenshots.windowAppearTimeoutSeconds ?? 15, windowTitle);
 
             const filenameTemplate = scenario.filename ?? `${String(index + 1).padStart(2, "0")}-{scenario}{level}-{colorMode}.png`;
             const filename = expandTemplate(filenameTemplate, context).replace(/--+/g, "-");
             const targetDir = join(outputDir, slug(device.name ?? device.displayType ?? "mac"));
+            const targetPath = join(targetDir, filename);
             if (!args.dryRun) {
               mkdirSync(targetDir, { recursive: true });
             }
-            run("screencapture", ["-l", windowId, "-o", "-x", join(targetDir, filename)], { dryRun: args.dryRun });
+            run("screencapture", ["-l", windowId, "-o", "-x", targetPath], { dryRun: args.dryRun });
+            if (screenshots.normalizeMacosScreenshots !== false) {
+              normalizeMacosScreenshot(config, args, targetPath, colorMode);
+            }
+            if (!args.dryRun && screenshots.rejectBlankScreenshots !== false) {
+              assertNonBlankScreenshot(targetPath);
+            }
 
             quitMacosApp(config, args, pid);
           }
@@ -1061,7 +1137,7 @@ fi
 
 function promoDevice(config) {
   const screenshots = config.screenshots ?? {};
-  const promo = config.promoVideo ?? {};
+  const promo = promoVideoConfig(config);
   const devices = screenshots.devices?.length ? screenshots.devices : [{ name: "iPhone 16", os: "18.1", displayType: "APP_IPHONE_65" }];
   if (promo.deviceName) {
     const match = devices.find((device) => device.name === promo.deviceName);
@@ -1087,7 +1163,7 @@ function defaultPromoSegments(config, screenshots) {
     ?? primary;
   const storeLine = config.appStoreUrl ? "Available on the App Store" : "Coming soon on the App Store";
   return [
-    { type: "title", durationSeconds: 1.2, title: promoAppName(config), subtitle: config.promoVideo?.subtitle ?? "A focused game." },
+    { type: "title", durationSeconds: 1.2, title: promoAppName(config), subtitle: promoVideoConfig(config).subtitle ?? "A focused game." },
     { type: "capture", durationSeconds: 2.8, scenarioId: primary.id },
     { type: "card", durationSeconds: 1.2, title: "Short focused sessions", subtitle: "Clean boards, clear goals." },
     { type: "capture", durationSeconds: 3.2, scenarioId: secondary.id },
@@ -1096,7 +1172,8 @@ function defaultPromoSegments(config, screenshots) {
 }
 
 function promoSegments(config, screenshots) {
-  const segments = config.promoVideo?.segments?.length ? config.promoVideo.segments : defaultPromoSegments(config, screenshots);
+  const promo = promoVideoConfig(config);
+  const segments = promo.segments?.length ? promo.segments : defaultPromoSegments(config, screenshots);
   const total = segments.reduce((sum, segment) => sum + Number(segment.durationSeconds ?? 0), 0);
   if (Math.abs(total - 10) > 0.05) {
     throw new Error(`Promo video segments must total 10 seconds; got ${total}.`);
@@ -1152,6 +1229,128 @@ function createPromoCardClip(segment, target, width, height, args) {
     "-pix_fmt", "yuv420p",
     "-r", "30",
     "-vf", `scale=${width}:${height},setsar=1`,
+    target
+  ], { dryRun: args.dryRun });
+}
+
+function promoCursorSvg(size = 52, color = "#111111", stroke = "#FFFFFF") {
+  const s = Number(size);
+  return `<svg xmlns="http://www.w3.org/2000/svg" width="${s}" height="${s}" viewBox="0 0 52 52">
+  <path d="M11 7l29 27-15 2-7 13z" fill="${xmlEscape(color)}" stroke="${xmlEscape(stroke)}" stroke-width="4" stroke-linejoin="round"/>
+</svg>
+`;
+}
+
+function promoClickSvg(size = 96, color = "#2563EB") {
+  const s = Number(size);
+  const center = s / 2;
+  return `<svg xmlns="http://www.w3.org/2000/svg" width="${s}" height="${s}" viewBox="0 0 ${s} ${s}">
+  <circle cx="${center}" cy="${center}" r="${Math.round(s * 0.34)}" fill="${xmlEscape(color)}" fill-opacity="0.18"/>
+  <circle cx="${center}" cy="${center}" r="${Math.round(s * 0.22)}" fill="none" stroke="${xmlEscape(color)}" stroke-width="${Math.max(4, Math.round(s * 0.06))}" stroke-opacity="0.82"/>
+</svg>
+`;
+}
+
+function ensurePromoOverlayAsset(tempDir, name, svg, args) {
+  const svgPath = join(tempDir, `${name}.svg`);
+  const pngPath = join(tempDir, `${name}.png`);
+  if (!commandExists("magick")) {
+    throw new Error("promo-video cursor and click overlays require ImageMagick. Install it with Homebrew: brew install imagemagick");
+  }
+  if (!args.dryRun) {
+    writeFileSync(svgPath, svg);
+  }
+  run("magick", ["-background", "none", svgPath, pngPath], { dryRun: args.dryRun });
+  return pngPath;
+}
+
+function normalizedPointValue(value, size) {
+  const number = Number(value ?? 0);
+  return Math.abs(number) <= 1 ? number * size : number;
+}
+
+function coordinateExpression(points, axis, size, offset = 0) {
+  const sorted = points
+    .filter((point) => point[axis] != null)
+    .map((point) => ({ at: Number(point.at ?? point.time ?? 0), value: normalizedPointValue(point[axis], size) - offset }))
+    .sort((a, b) => a.at - b.at);
+  if (sorted.length === 0) {
+    return String(Math.round(size / 2 - offset));
+  }
+  if (sorted.length === 1) {
+    return String(Math.round(sorted[0].value));
+  }
+
+  let expression = String(Math.round(sorted[sorted.length - 1].value));
+  for (let index = sorted.length - 2; index >= 0; index -= 1) {
+    const from = sorted[index];
+    const to = sorted[index + 1];
+    const duration = Math.max(0.001, to.at - from.at);
+    const interpolated = `${from.value.toFixed(2)}+(${(to.value - from.value).toFixed(2)})*(t-${from.at.toFixed(2)})/${duration.toFixed(2)}`;
+    expression = `if(between(t\\,${from.at.toFixed(2)}\\,${to.at.toFixed(2)})\\,${interpolated}\\,${expression})`;
+  }
+  return `if(lt(t\\,${sorted[0].at.toFixed(2)})\\,${sorted[0].value.toFixed(2)}\\,${expression})`;
+}
+
+function renderVideoWithCursorOverlay(source, target, recording, width, height, tempDir, args) {
+  const cursor = recording.cursor ?? {};
+  const cursorMoves = cursor.moves?.length ? cursor.moves : recording.cursorPath ?? recording.pointerPath ?? [];
+  const clicks = recording.clicks ?? cursor.clicks ?? [];
+  const showCursor = cursor.enabled !== false;
+  const baseFilter = recording.videoFilter
+    ?? recording.filter
+    ?? `scale=${width}:${height}:force_original_aspect_ratio=decrease,pad=${width}:${height}:(ow-iw)/2:(oh-ih)/2,setsar=1`;
+
+  if (!showCursor && clicks.length === 0) {
+    renderPromoSegment(source, target, recording.durationSeconds, width, height, args);
+    return;
+  }
+
+  const clickSize = Number(cursor.clickSize ?? recording.clickSize ?? 96);
+  const clickPng = ensurePromoOverlayAsset(tempDir, "click", promoClickSvg(clickSize, cursor.clickColor ?? recording.clickColor), args);
+  const inputs = ["-i", source, "-i", clickPng];
+  const filters = [`[0:v]${baseFilter}[base]`];
+  let clickInputIndex = 1;
+  let last = "base";
+
+  if (showCursor) {
+    const cursorSize = Number(cursor.size ?? 52);
+    const cursorPng = ensurePromoOverlayAsset(tempDir, "cursor", promoCursorSvg(cursorSize, cursor.color, cursor.strokeColor), args);
+    inputs.push("-i", cursorPng);
+    clickInputIndex = 1;
+    const cursorInputIndex = 2;
+    const points = cursorMoves.length ? cursorMoves : [
+      { at: 0, x: 0.5, y: 0.5 },
+      { at: Number(recording.durationSeconds ?? 1), x: 0.5, y: 0.5 }
+    ];
+    const cursorX = coordinateExpression(points, "x", width, cursor.hotspotX ?? 6);
+    const cursorY = coordinateExpression(points, "y", height, cursor.hotspotY ?? 6);
+    filters.push(`[${last}][${cursorInputIndex}:v]overlay=x='${cursorX}':y='${cursorY}':enable='between(t,0,${Number(recording.durationSeconds ?? 1).toFixed(2)})'[v0]`);
+    last = "v0";
+  }
+
+  clicks.forEach((click, index) => {
+    const clickX = Math.round(normalizedPointValue(click.x, width) - clickSize / 2);
+    const clickY = Math.round(normalizedPointValue(click.y, height) - clickSize / 2);
+    const start = Number(click.at ?? click.time ?? 0);
+    const end = start + Number(click.durationSeconds ?? click.duration ?? 0.55);
+    const next = `v${index + (showCursor ? 1 : 0) + 1}`;
+    filters.push(`[${last}][${clickInputIndex}:v]overlay=x=${clickX}:y=${clickY}:enable='between(t,${start.toFixed(2)},${end.toFixed(2)})'[${next}]`);
+    last = next;
+  });
+  const duration = Number(recording.durationSeconds ?? 1);
+  const output = "vout";
+  filters.push(`[${last}]tpad=stop_mode=clone:stop_duration=${duration.toFixed(2)},trim=duration=${duration.toFixed(2)},setpts=PTS-STARTPTS[${output}]`);
+
+  run("ffmpeg", [
+    "-y",
+    ...inputs,
+    "-filter_complex", filters.join(";"),
+    "-map", `[${output}]`,
+    "-t", String(duration),
+    "-pix_fmt", "yuv420p",
+    "-r", String(recording.fps ?? 30),
+    "-an",
     target
   ], { dryRun: args.dryRun });
 }
@@ -1217,7 +1416,153 @@ function launchPromoScenario(config, screenshots, udid, segment, args) {
   }
 }
 
+function recordingDevice(config, recording) {
+  const screenshots = config.screenshots ?? {};
+  const devices = screenshots.devices?.length ? screenshots.devices : [{ name: "iPhone 16", os: "18.1", displayType: "APP_IPHONE_65" }];
+  if (recording.deviceName) {
+    const match = devices.find((device) => device.name === recording.deviceName);
+    if (!match) {
+      throw new Error(`Promo recording device not found in screenshots.devices: ${recording.deviceName}`);
+    }
+    return { ...match };
+  }
+  if (recording.device) {
+    return { ...recording.device };
+  }
+  return { ...(devices.find((candidate) => candidate.displayType?.includes("IPHONE")) ?? devices[0]) };
+}
+
+function promoRecordingOutputPath(config, args, recording, device) {
+  const outputDir = promoVideoOutputDir(config, args, device);
+  const filename = recording.filename
+    ?? `${config.app}-${slug(device.name ?? device.displayType ?? platformFor(config))}-${slug(recording.id ?? "promo")}.mp4`;
+  return join(outputDir, filename);
+}
+
+function launchPromoRecordingIos(config, recording, udid, device, args) {
+  const screenshots = config.screenshots ?? {};
+  const locale = firstMatchingLocale(screenshots, recording, recording.locale);
+  const colorMode = firstMatchingColorMode(screenshots, recording, recording.colorMode);
+  const context = { app: config.app, locale: locale.id, appLanguage: locale.appLanguage, colorMode, scenario: recording, level: null, device };
+  const defaults = mergedUserDefaults(screenshots.userDefaults, colorMode.userDefaults, recording.userDefaults);
+  clearUserDefaults(udid, config.bundleId, Object.keys(defaults), args);
+  applyUserDefaults(udid, config.bundleId, defaults, args);
+  const launchEnv = simctlChildEnv(expandObjectTemplate({
+    ...screenshots.env,
+    ...colorMode.env,
+    ...recording.env
+  }, context));
+  const launchArgs = [
+    ...(recording.includeBaseLaunchArgs ? (screenshots.baseLaunchArgs ?? []) : []),
+    ...(colorMode.launchArgs ?? []),
+    ...(recording.launchArgs ?? [])
+  ].map((value) => expandTemplate(value, context));
+
+  run("xcrun", [
+    "simctl", "launch", "--terminate-running-process", udid, config.bundleId, ...launchArgs
+  ], { dryRun: args.dryRun, env: launchEnv });
+
+  const waitSeconds = recording.startDelaySeconds ?? screenshots.defaultWaitSeconds ?? 1;
+  if (!args.dryRun) {
+    waitMilliseconds(waitSeconds * 1000);
+  }
+}
+
+function capturePromoRecordingIos(config, recording, args) {
+  const screenshots = config.screenshots ?? {};
+  const device = recordingDevice(config, recording);
+  const width = recording.width ?? promoVideoConfig(config).width ?? 1290;
+  const height = recording.height ?? promoVideoConfig(config).height ?? 2796;
+  const outputDir = promoVideoOutputDir(config, args, device);
+  const tempDir = join(outputDir, ".tmp", `${config.app}-${slug(recording.id ?? device.name ?? "ios")}`);
+  const raw = join(tempDir, `${slug(recording.id ?? device.name ?? "ios")}-raw.mp4`);
+  const target = promoRecordingOutputPath(config, args, recording, device);
+
+  if (!args.dryRun) {
+    mkdirSync(outputDir, { recursive: true });
+    rmSync(tempDir, { recursive: true, force: true });
+    mkdirSync(tempDir, { recursive: true });
+  }
+
+  const udid = findSimulator(device, args);
+  device.udidForBuild = udid;
+  buildSimulatorApp(config, args, device);
+  eraseSimulator(udid, recording.eraseBeforeCapture ?? promoVideoConfig(config).eraseBeforeCapture ?? screenshots.eraseBeforeCapture ?? false, args);
+  bootSimulator(udid, args);
+  setStatusBar(udid, screenshots.statusBar, args);
+  run("xcrun", ["simctl", "install", udid, simulatorAppPath(config)], { dryRun: args.dryRun });
+  launchPromoRecordingIos(config, recording, udid, device, args);
+  recordSimulatorVideo(udid, raw, recording.durationSeconds, args);
+  renderVideoWithCursorOverlay(raw, target, recording, width, height, tempDir, args);
+  resetStatusBar(udid, screenshots.statusBar, args);
+  return target;
+}
+
+function recordMacosVideo(target, durationSeconds, args) {
+  run("screencapture", ["-x", "-v", "-V", String(durationSeconds), target], { dryRun: args.dryRun });
+}
+
+function capturePromoRecordingMacos(config, recording, args) {
+  const screenshots = config.screenshots ?? {};
+  const device = recording.device ?? { name: recording.deviceName ?? "mac", displayType: "mac" };
+  const width = recording.width ?? promoVideoConfig(config).width ?? 1920;
+  const height = recording.height ?? promoVideoConfig(config).height ?? 1200;
+  const outputDir = promoVideoOutputDir(config, args, device);
+  const tempDir = join(outputDir, ".tmp", `${config.app}-${slug(recording.id ?? "mac")}`);
+  const raw = join(tempDir, `${slug(recording.id ?? "mac")}-raw.mov`);
+  const target = promoRecordingOutputPath(config, args, recording, device);
+  const colorModes = screenshots.colorModes?.length ? screenshots.colorModes : [{ id: "default" }];
+  const colorMode = recording.colorMode ? colorModes.find((mode) => mode.id === recording.colorMode) ?? { id: recording.colorMode } : colorModes[0];
+  const context = { app: config.app, locale: recording.locale ?? "en-US", appLanguage: recording.locale ?? "en-US", colorMode, scenario: recording, level: null, device };
+  const launchEnv = expandObjectTemplate({
+    ApplePersistenceIgnoreState: "YES",
+    ...screenshots.env,
+    ...colorMode.env,
+    ...recording.env
+  }, context);
+  const launchArgs = (recording.launchArgs ?? []).map((value) => expandTemplate(value, context));
+
+  if (!args.dryRun) {
+    mkdirSync(outputDir, { recursive: true });
+    rmSync(tempDir, { recursive: true, force: true });
+    mkdirSync(tempDir, { recursive: true });
+  }
+
+  buildMacosApp(config, args);
+  const pid = launchMacosApp(config, args, launchEnv, launchArgs);
+  if (!args.dryRun) {
+    waitMilliseconds((recording.startDelaySeconds ?? screenshots.defaultWaitSeconds ?? 1.5) * 1000);
+  }
+  recordMacosVideo(raw, recording.durationSeconds, args);
+  quitMacosApp(config, args, pid);
+  renderVideoWithCursorOverlay(raw, target, recording, width, height, tempDir, args);
+  return target;
+}
+
+function capturePromoRecordings(config, args) {
+  requireFields(config, ["app", "scheme", "project", "bundleId"]);
+  const promo = promoVideoConfig(config);
+  const recordings = promo.recordings ?? [];
+
+  const targets = recordings.map((recording) => (
+    platformFor(config) === "macos"
+      ? capturePromoRecordingMacos(config, recording, args)
+      : capturePromoRecordingIos(config, recording, args)
+  ));
+
+  console.log(`\nPromo video${targets.length === 1 ? "" : "s"} written:`);
+  for (const target of targets) {
+    console.log(`- ${target}`);
+  }
+}
+
 function capturePromoVideo(config, args) {
+  const promo = promoVideoConfig(config);
+  if (promo.recordings?.length) {
+    capturePromoRecordings(config, args);
+    return;
+  }
+
   requireFields(config, ["app", "scheme", "project", "bundleId"]);
   const screenshots = config.screenshots;
   if (!screenshots) {
@@ -1227,7 +1572,6 @@ function capturePromoVideo(config, args) {
     throw new Error("promo-video requires ffmpeg. Install it with Homebrew: brew install ffmpeg");
   }
 
-  const promo = config.promoVideo ?? {};
   const device = promoDevice(config);
   const segments = promoSegments(config, screenshots);
   const width = promo.width ?? 1290;
@@ -1524,6 +1868,8 @@ function main() {
     captureScreenshots(config, args, { outputDir: siteScreenshotOutputDir(config), cleanOutputDir: true });
     break;
   case "promo-video":
+  case "promo-videos":
+  case "videos":
     capturePromoVideo(config, args);
     break;
   case "archive":

@@ -32,5 +32,5 @@ Only config, metadata, screenshots, app hooks, and signing/app identifiers belon
 - Every app has an app release config.
 - Every app has App Store metadata JSON.
 - Screenshot scenarios cover the required App Store screenshots.
-- Promo video config totals 10 seconds.
+- Segment-based promo video config totals 10 seconds; recording-based promo video config sets explicit durations per recording.
 - Missing dependencies are documented by preflight instead of discovered mid-run.

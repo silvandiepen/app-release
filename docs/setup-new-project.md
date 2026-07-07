@@ -10,7 +10,7 @@ The product repo should own all app-specific configuration, content, screenshots
 
 - validate apps
 - generate screenshots
-- generate 10 second promo videos
+- generate promo videos
 - archive and export iOS builds
 - prepare App Store metadata for Fastlane Deliver
 - upload builds, metadata, and screenshots
